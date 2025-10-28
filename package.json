@@ -1,0 +1,22 @@
+{
+  "name": "koishi-plugin-ccb-plus",
+  "description": "Koshi插件，与群友发生ccb行为。(移植自astrbot_plugin_ccb_plus)",
+  "version": "0.0.1",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "dist"
+  ],
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "chatbot",
+    "koishi",
+    "plugin",
+    "ccb",
+    "group"
+  ],
+  "peerDependencies": {
+    "koishi": "^4.18.7"
+  }
+}
