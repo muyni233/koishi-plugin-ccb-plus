@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/koishi-plugin-ccb-plus?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-ccb-plus)
 
-Koshi插件，与群友发生ccb行为。(移植自astrbot_plugin_ccb_plus)
+Koishi插件，与群友发生ccb行为。(移植自astrbot_plugin_ccb_plus)
 
 原插件：[Koikokokokoro/astrbot_plugin_ccb_plus](https://github.com/Koikokokokoro/astrbot_plugin_ccb_plus)
 
