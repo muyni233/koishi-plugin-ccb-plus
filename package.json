@@ -1,13 +1,14 @@
 {
   "name": "koishi-plugin-ccb-plus",
   "description": "Koishi插件，与群友发生ccb行为。(移植自astrbot_plugin_ccb_plus)",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
     "lib",
     "dist"
   ],
+  "homepage": "https://github.com/muyni233/koishi-plugin-ccb-plus",
   "license": "AGPL-3.0-only",
   "keywords": [
     "chatbot",
