@@ -1,5 +1,13 @@
 import { Context, Schema } from 'koishi';
 export declare const name = "ccb-plus";
+export interface CheatConfig {
+    userId: string;
+    ywWindow: number;
+    ywThreshold: number;
+    ywProbability: number;
+    critProb: number;
+    ywBanDuration: number;
+}
 export interface CCBConfig {
     ywWindow: number;
     ywThreshold: number;
@@ -9,6 +17,7 @@ export interface CCBConfig {
     selfCcb: boolean;
     critProb: number;
     isLog: boolean;
+    cheatList: CheatConfig[];
 }
 export interface CCBData {
     [groupId: string]: CCBGroupData[];

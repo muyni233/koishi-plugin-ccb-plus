@@ -8,4 +8,4 @@ Koishi插件，与群友发生ccb行为。(移植自astrbot_plugin_ccb_plus)
 
 以后会进行小幅修改
 
-> 使用Qwen3-Coder协助完成
+> 使用 Qwen3-Coder & Gemini-3-Pro-Preview 协助完成
