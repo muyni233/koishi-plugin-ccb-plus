@@ -1,5 +1,6 @@
 import { Context, Schema } from 'koishi';
 export declare const name = "ccb-plus";
+export declare const inject: string[];
 export interface CheatConfig {
     userId: string;
     ywWindow: number;
@@ -16,39 +17,30 @@ export interface CCBConfig {
     whiteList: string[];
     selfCcb: boolean;
     critProb: number;
-    isLog: boolean;
     cheatList: CheatConfig[];
 }
-export interface CCBData {
-    [groupId: string]: CCBGroupData[];
-}
-export interface CCBActorInfo {
-    count: number;
-    first: boolean;
-    max: boolean;
-}
-export interface CCBGroupData {
-    id: string;
+export interface CCBRecord {
+    groupId: string;
+    userId: string;
     num: number;
     vol: number;
-    ccb_by: {
-        [actorId: string]: CCBActorInfo;
-    };
     max: number;
+    ccb_by: {
+        [actorId: string]: {
+            count: number;
+            first: boolean;
+            max: boolean;
+        };
+    };
 }
-export interface CCBLogEntry {
-    group: string;
-    executor: string;
-    target: string;
-    time: number;
-    vol: string;
-}
-export interface CCBActionTime {
-    [userId: string]: number[];
+export interface CCBUserSetting {
+    userId: string;
+    optOut: boolean;
 }
 declare module 'koishi' {
     interface Tables {
-        ccb_data: CCBData;
+        ccb_record: CCBRecord;
+        ccb_setting: CCBUserSetting;
     }
 }
 export declare const Config: Schema<CCBConfig>;
