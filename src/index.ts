@@ -25,6 +25,7 @@ export interface CCBConfig {
   whiteList: string[]
   selfCcb: boolean
   critProb: number
+  toggleCooldown: number
   cheatList: CheatConfig[]
 }
 
@@ -50,6 +51,8 @@ export interface CCBRecord {
 export interface CCBUserSetting {
   userId: string
   optOut: boolean // true 表示拒绝被 ccb
+  lastToggleTime: number
+  overrides: Record<string, boolean>
 }
 
 declare module 'koishi' {
@@ -60,20 +63,21 @@ declare module 'koishi' {
 }
 
 export const Config: Schema<CCBConfig> = Schema.object({
-  ywWindow: Schema.number().default(60).description('全局触发赛博阳痿的窗口时间（秒）'),
+  ywWindow: Schema.number().default(60).description('全局触发冷却的窗口时间（秒）'),
   ywThreshold: Schema.number().default(5).description('全局窗口时间内最大ccb数'),
-  ywBanDuration: Schema.number().default(900).description('全局养胃时长（秒）'),
-  ywProbability: Schema.number().default(0.1).min(0).max(1).description('全局随机养胃概率'),
+  ywBanDuration: Schema.number().default(900).description('全局冷却时长（秒）'),
+  ywProbability: Schema.number().default(0.1).min(0).max(1).description('全局随机冷却概率'),
   whiteList: Schema.array(String).default([]).description('全局配置的黑名单'),
   selfCcb: Schema.boolean().default(false).description('是否允许对自己ccb'),
   critProb: Schema.number().default(0.2).min(0).max(1).description('全局暴击概率'),
+  toggleCooldown: Schema.number().default(1800).description('开关保护模式的冷却时间（秒）'),
   cheatList: Schema.array(Schema.object({
     userId: Schema.string().required().description('用户ID'),
     ywWindow: Schema.number().default(10).description('特权窗口时间（秒）'),
     ywThreshold: Schema.number().default(999).description('特权窗口内最大次数'),
-    ywProbability: Schema.number().default(0).min(0).max(1).description('特权养胃概率'),
+    ywProbability: Schema.number().default(0).min(0).max(1).description('特权冷却概率'),
     critProb: Schema.number().default(0.8).min(0).max(1).description('特权暴击概率'),
-    ywBanDuration: Schema.number().default(60).description('特权养胃时长（秒）')
+    ywBanDuration: Schema.number().default(60).description('特权冷却时长（秒）')
   })).role('table').description('开挂名单（优先级高于全局设置）')
 })
 
@@ -93,6 +97,8 @@ export function apply(ctx: Context, config: CCBConfig) {
   ctx.model.extend('ccb_setting', {
     userId: 'string',
     optOut: 'boolean',
+    lastToggleTime: 'unsigned',
+    overrides: 'json',
   }, {
     primary: 'userId',
   })
@@ -100,10 +106,11 @@ export function apply(ctx: Context, config: CCBConfig) {
   // --- 变量初始化 ---
   const actionTimes: { [userId: string]: number[] } = {}
   const banList: { [userId: string]: number } = {}
-  
-  // 昵称缓存
+
+  // 昵称缓存（带大小限制）
   const nicknameCache = new Map<string, { name: string, timestamp: number }>()
-  const CACHE_DURATION = 5 * 60 * 1000 
+  const MAX_CACHE_SIZE = 2000
+  const CACHE_DURATION = 5 * 60 * 1000
 
   // --- 2. 数据迁移逻辑 (Old JSON -> Database) ---
   ctx.on('ready', async () => {
@@ -111,10 +118,10 @@ export function apply(ctx: Context, config: CCBConfig) {
     try {
       await fs.access(DATA_FILE) // 检查文件是否存在
       console.log('[ccb-plus] 检测到旧版数据文件，正在迁移至数据库...')
-      
+
       const fileContent = await fs.readFile(DATA_FILE, 'utf-8')
       const jsonData = JSON.parse(fileContent)
-      
+
       const ops = []
       for (const groupId in jsonData) {
         const groupRecords = jsonData[groupId]
@@ -133,9 +140,9 @@ export function apply(ctx: Context, config: CCBConfig) {
           }
         }
       }
-      
+
       await Promise.all(ops)
-      
+
       // 迁移完成后重命名文件，防止下次启动重复迁移
       const BACKUP_FILE = path.join(ctx.baseDir, 'data', 'ccb.json.migrated')
       await fs.rename(DATA_FILE, BACKUP_FILE)
@@ -148,6 +155,34 @@ export function apply(ctx: Context, config: CCBConfig) {
     }
   })
 
+  // --- 定期清理过期的内存数据 ---
+  const CLEANUP_INTERVAL = 10 * 60 * 1000 // 10 分钟
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now() / 1000
+    // 清理过期的 ban
+    for (const userId in banList) {
+      if (banList[userId] < now) delete banList[userId]
+    }
+    // 清理过期的 actionTimes
+    for (const userId in actionTimes) {
+      if (!actionTimes[userId] || actionTimes[userId].length === 0) {
+        delete actionTimes[userId]
+      }
+    }
+    // 清理过期的昵称缓存
+    const cacheNow = Date.now()
+    for (const [key, value] of nicknameCache) {
+      if (cacheNow - value.timestamp > CACHE_DURATION) {
+        nicknameCache.delete(key)
+      }
+    }
+  }, CLEANUP_INTERVAL)
+
+  // 插件卸载时清理定时器
+  ctx.on('dispose', () => {
+    clearInterval(cleanupTimer)
+  })
+
   // --- 辅助函数 ---
 
   function getAvatar(userId: string): string {
@@ -158,15 +193,20 @@ export function apply(ctx: Context, config: CCBConfig) {
     const cacheKey = `${session.guildId}:${userId}`
     const cached = nicknameCache.get(cacheKey)
     const now = Date.now()
-    
+
     if (cached && (now - cached.timestamp) < CACHE_DURATION) {
       return cached.name
     }
-    
+
     const setAndReturnName = (name: string | undefined) => {
       if (name && name !== userId) {
         const actualName = name.trim()
         if (actualName) {
+          // 淘汰最旧的缓存条目（如果超过限制）
+          if (nicknameCache.size >= MAX_CACHE_SIZE) {
+            const oldestKey = nicknameCache.keys().next().value
+            if (oldestKey) nicknameCache.delete(oldestKey)
+          }
           nicknameCache.set(cacheKey, { name: actualName, timestamp: now })
           return actualName
         }
@@ -180,22 +220,22 @@ export function apply(ctx: Context, config: CCBConfig) {
         const displayName = memberInfo?.nick || memberInfo?.user?.name || memberInfo?.name
         const result = setAndReturnName(displayName)
         if (result) return result
-      } catch (error) {}
+      } catch (error) { }
     }
 
     try {
       const userInfo = await session.bot.getUser(userId)
-      const displayName = userInfo?.name || userInfo?.nick || userInfo?.nickname
+      const displayName = userInfo?.name || userInfo?.nick
       const result = setAndReturnName(displayName)
       if (result) return result
-    } catch (e) {}
+    } catch (e) { }
 
     try {
       if (session.event?.user?.id === userId) {
         const result = setAndReturnName(session.event?.user?.name)
         if (result) return result
       }
-    } catch (nestedError) {}
+    } catch (nestedError) { }
 
     const friendlyName = `用户${userId}`
     nicknameCache.set(cacheKey, { name: friendlyName, timestamp: now })
@@ -209,42 +249,88 @@ export function apply(ctx: Context, config: CCBConfig) {
     return null
   }
 
-  async function validateTargetUser(session: Session, target: string): Promise<string> {
-    let targetUserId = session.userId
-    if (target) {
-      const match = target.match(/^[^:]+:(.+)$/)
-      if (match) {
-        targetUserId = match[1]
-        try {
-          const memberInfo = await session.bot.getGuildMember(session.guildId, targetUserId)
-          if (!memberInfo) {
-            return '无法找到指定用户，请检查输入是否正确。'
-          }
-        } catch (error) {
-          return '无法找到指定用户，请检查输入是否正确。'
-        }
-      }
-    } else if (session.quote?.user?.id) {
-      targetUserId = session.quote.user.id
-      try {
-        const memberInfo = await session.bot.getGuildMember(session.guildId, targetUserId)
-        if (!memberInfo) {
-          return '无法找到指定用户，请检查输入是否正确。'
-        }
-      } catch (error) {
-        return '无法找到指定用户，请检查输入是否正确。'
-      }
+  // 通用目标用户查找函数
+  async function findTargetUser(session: Session, input: string): Promise<string | null> {
+    if (!input) return null
+
+    // 1. 尝试解析 At 元素格式 (例如 <at id="123"/>)
+    const atMatch = input.match(/<at\s[^>]*id="([^"]+)"/)
+    if (atMatch) return atMatch[1]
+
+    // 2. 尝试 OneBot 格式 (onebot:123)
+    const unionMatch = input.match(/^[^:]+:(.+)$/)
+    if (unionMatch) {
+      return unionMatch[1]
     }
-    return targetUserId
+
+    // 3. 尝试纯数字 QQ 号
+    if (/^\d+$/.test(input)) {
+      return input
+    }
+
+    // 4. 尝试昵称匹配
+    try {
+      const list = await session.bot.getGuildMemberList(session.guildId)
+      const members = list?.data || []
+
+      const clean = (s: string) => s.replace(/\s/g, '').toLowerCase()
+      const targetName = clean(input)
+
+      // 4.1 精确匹配 (去除空格后)
+      let found = members.find(m => {
+        const nick = m.nick || m.user?.name || m.name || ''
+        return clean(nick) === targetName
+      })
+
+      // 4.2 包含匹配 (如果没找到精确的)
+      if (!found) {
+        found = members.find(m => {
+          const nick = m.nick || m.user?.name || m.name || ''
+          return clean(nick).includes(targetName)
+        })
+      }
+
+      if (found) return found.user?.id
+    } catch (e) {
+      // ignore
+    }
+
+    return null
+  }
+
+  async function validateTargetUser(session: Session, target: string): Promise<string> {
+    // 1. 优先处理显式参数
+    if (target) {
+      const foundId = await findTargetUser(session, target)
+      if (foundId) {
+        try {
+          const member = await session.bot.getGuildMember(session.guildId, foundId)
+          if (!member) return '无法找到指定用户，请检查输入是否正确。'
+        } catch {
+          return '无法找到指定用户，请检查输入是否正确。'
+        }
+        return foundId
+      }
+      return '无法找到指定用户，请检查输入是否正确。'
+    }
+
+    // 2. 其次处理引用
+    if (session.quote?.user?.id) {
+      // 引用的人肯定在 (或者曾经在)
+      return session.quote.user.id
+    }
+
+    // 3. 最后返回自己
+    return session.userId
   }
 
   async function updateCCBRecord(session: Session, groupId: string, targetUserId: string, duration: number, V: number, nickname: string, crit: boolean, pic: string): Promise<string> {
     // 获取现有记录
     const [record] = await ctx.database.get('ccb_record', { groupId, userId: targetUserId })
-    
+
     // 如果没有记录，调用创建新记录逻辑
     if (!record) {
-      return await createNewCCBRecord(session, groupId, targetUserId, duration, V, nickname, pic)
+      return await createNewCCBRecord(session, groupId, targetUserId, duration, V, nickname, crit, pic)
     }
 
     const senderId = session.userId
@@ -279,14 +365,8 @@ export function apply(ctx: Context, config: CCBConfig) {
         if (ccb_by[k]) ccb_by[k].max = false
       }
       if (ccb_by[senderId]) ccb_by[senderId].max = true
-    } else {
-        // 保持原样，清除其他意外的max标记(如果有)
-        for (const k in ccb_by) {
-            if (ccb_by[k] && !ccb_by[k].max) {
-                ccb_by[k].max = false
-            }
-        }
     }
+    // V <= prev_max 时无需任何操作，已有的 max 标记保持不变
 
     // 更新数据库
     await ctx.database.set('ccb_record', { groupId, userId: targetUserId }, {
@@ -299,7 +379,7 @@ export function apply(ctx: Context, config: CCBConfig) {
     const resultMessage = crit
       ? `你和${nickname}发生了${duration}min长的ccb行为，向ta注入了 💥 暴击！${V.toFixed(2)}ml的生命因子`
       : `你和${nickname}发生了${duration}min长的ccb行为，向ta注入了${V.toFixed(2)}ml的生命因子`
-    
+
     const message = [
       resultMessage,
       segment.image(pic),
@@ -309,7 +389,7 @@ export function apply(ctx: Context, config: CCBConfig) {
     return message
   }
 
-  async function createNewCCBRecord(session: Session, groupId: string, targetUserId: string, duration: number, V: number, nickname: string, pic: string): Promise<string> {
+  async function createNewCCBRecord(session: Session, groupId: string, targetUserId: string, duration: number, V: number, nickname: string, crit: boolean, pic: string): Promise<string> {
     const newRecord: CCBRecord = {
       groupId,
       userId: targetUserId,
@@ -318,10 +398,12 @@ export function apply(ctx: Context, config: CCBConfig) {
       max: V,
       ccb_by: { [session.userId]: { count: 1, first: true, max: true } }
     }
-    
+
     await ctx.database.upsert('ccb_record', [newRecord])
 
-    const resultMessage = `你和${nickname}发生了${duration}min长的ccb行为，向ta注入了${V.toFixed(2)}ml的生命因子`
+    const resultMessage = crit
+      ? `你和${nickname}发生了${duration}min长的ccb行为，向ta注入了 💥 暴击！${V.toFixed(2)}ml的生命因子`
+      : `你和${nickname}发生了${duration}min长的ccb行为，向ta注入了${V.toFixed(2)}ml的生命因子`
     const message = [
       resultMessage,
       segment.image(pic),
@@ -334,24 +416,118 @@ export function apply(ctx: Context, config: CCBConfig) {
   // --- 3. 命令定义 ---
 
   ctx.command('ccb [target:user]', '给群友注入生命因子')
-    .option('off', '--off 将自己加入白名单（禁止被人ccb）')
-    .option('on', '--on 将自己移出白名单（允许被人ccb）')
+    .option('off', '--off [user:string] 将自己加入白名单（禁止被人ccb），可指定用户')
+    .option('on', '--on [user:string] 将自己移出白名单（允许被人ccb），可指定用户')
     .action(async ({ session, options }, target: string) => {
       const checkResult = checkGroupCommand(session)
       if (checkResult) return checkResult
-      
+
       const senderId = session.userId
 
-      // --- 处理开关选项 ---
-      if (options.off) {
-        await ctx.database.upsert('ccb_setting', [{ userId: senderId, optOut: true }])
-        return '已加入保护名单，阻止你被ccb。'
+      // 冷却检查辅助函数
+      const checkCooldown = (lastToggle: number): string | null => {
+        const now = Date.now()
+        const cooldownMs = config.toggleCooldown * 1000
+        if (now - lastToggle < cooldownMs) {
+          const remain = Math.ceil((cooldownMs - (now - lastToggle)) / 1000)
+          const m = Math.floor(remain / 60)
+          const s = remain % 60
+          return `操作太频繁了，请等待 ${m}分${s}秒 后再试。`
+        }
+        return null
       }
-      if (options.on) {
-        await ctx.database.upsert('ccb_setting', [{ userId: senderId, optOut: false }])
-        return '已移出保护名单，允许你被ccb。'
+
+      // --- 处理开关选项 ---
+
+      const hasOff = 'off' in options
+      const hasOn = 'on' in options
+      if (hasOff || hasOn) {
+        const isOff = hasOff
+        const optionVal = isOff ? options.off : options.on
+
+        let targetUserStr: string | null = null
+        if (typeof optionVal === 'string' && optionVal.trim()) {
+          targetUserStr = await findTargetUser(session, optionVal.trim())
+        }
+
+        // 兜底：at 元素未被选项解析器捕获，直接从消息元素中提取
+        if (!targetUserStr) {
+          const atEl = session.elements?.find(el => el.type === 'at')
+          if (atEl?.attrs?.id) {
+            targetUserStr = String(atEl.attrs.id)
+          }
+        }
+
+        // 如果没有识别到目标用户，则是全局开关
+        if (!targetUserStr) {
+          // 如果用户明确输入了字符串参数但没找到人，应该报错而不是变成全局开关
+          if (typeof optionVal === 'string' && optionVal.trim()) {
+            return `无法找到用户「${optionVal}」，请检查输入是否正确。`
+          }
+
+          const now = Date.now()
+          const [userSetting] = await ctx.database.get('ccb_setting', { userId: senderId })
+          const lastToggle = userSetting?.lastToggleTime || 0
+
+          // 检查冷却
+          const cooldownResult = checkCooldown(lastToggle)
+          if (cooldownResult) return cooldownResult
+
+          const newOptOut = !!isOff
+          await ctx.database.upsert('ccb_setting', [{
+            userId: senderId,
+            optOut: newOptOut,
+            lastToggleTime: now,
+            overrides: userSetting?.overrides || {}
+          }])
+
+          return newOptOut
+            ? '已开启全局保护模式，阻止你被ccb。'
+            : '已关闭全局保护模式，允许你被ccb。'
+        } else {
+          try {
+            const memberInfo = await session.bot.getGuildMember(session.guildId, targetUserStr)
+            if (!memberInfo) {
+              return '无法找到指定用户，请检查输入是否正确。'
+            }
+          } catch (error) {
+            return '无法找到指定用户，请检查输入是否正确。'
+          }
+
+          const targetId = targetUserStr
+
+          // 检查冷却
+          const now = Date.now()
+          const [userSetting] = await ctx.database.get('ccb_setting', { userId: senderId })
+          const lastToggle = userSetting?.lastToggleTime || 0
+          const cooldownResult = checkCooldown(lastToggle)
+          if (cooldownResult) return cooldownResult
+
+          const overrides = userSetting?.overrides || {}
+
+          overrides[targetId] = !isOff // true 代表允许，false 代表禁止
+
+          await ctx.database.upsert('ccb_setting', [{
+            userId: senderId,
+            overrides: overrides,
+            optOut: userSetting?.optOut ?? false,
+            lastToggleTime: now
+          }])
+
+          const targetNick = await getUserNickname(session, targetId).catch(() => targetId) || targetId
+          return isOff
+            ? `已禁止用户 ${targetNick} 对你ccb。`
+            : `已允许用户 ${targetNick} 对你ccb。`
+        }
       }
       // ------------------
+
+      // --- 检查发起者是否在保护名单 ---
+      const [senderSetting] = await ctx.database.get('ccb_setting', { userId: senderId })
+      if (senderSetting?.optOut) {
+        return '你已开启保护模式，无法ccb他人。请先使用 --on 解除保护。'
+      }
+      // ---------------------------
 
       const actorId = senderId
       const now = Date.now() / 1000
@@ -383,13 +559,13 @@ export function apply(ctx: Context, config: CCBConfig) {
 
       if (times.length > currentConfig.ywThreshold) {
         banList[actorId] = now + currentConfig.ywBanDuration
-        actionTimes[actorId] = [] 
+        actionTimes[actorId] = []
         return '冲得出来吗你就冲，再冲就给你折了'
       }
 
       let targetUserId = await validateTargetUser(session, target)
       if (targetUserId.startsWith('无法找到')) {
-        return targetUserId 
+        return targetUserId
       }
 
       // --- 检查目标是否在白名单 ---
@@ -398,44 +574,50 @@ export function apply(ctx: Context, config: CCBConfig) {
         const nickname = await getUserNickname(session, targetUserId) || targetUserId
         return `${nickname} 拒绝了和你ccb。`
       }
-      // 2. 检查 数据库 用户自定义设置
-      const [targetSetting] = await ctx.database.get('ccb_setting', { userId: targetUserId })
-      if (targetSetting && targetSetting.optOut) {
+      // 2. 检查发起者是否主动禁止了目标（互相禁止逻辑）
+      if (senderSetting?.overrides?.[targetUserId] === false) {
         const nickname = await getUserNickname(session, targetUserId) || targetUserId
-        return `${nickname} 拒绝了和你ccb`
+        return `你已禁止与 ${nickname} 进行ccb。`
+      }
+      // 3. 检查 数据库 目标用户自定义设置
+      const [targetSetting] = await ctx.database.get('ccb_setting', { userId: targetUserId })
+      if (targetSetting) {
+        const overrides = targetSetting.overrides || {}
+        // 优先检查特定覆盖
+        if (overrides[actorId] === false) {
+          const nickname = await getUserNickname(session, targetUserId) || targetUserId
+          return `${nickname} 拒绝了和你ccb`
+        }
+
+        // 如果没有特定允许，再检查全局设置
+        if (overrides[actorId] !== true && targetSetting.optOut) {
+          const nickname = await getUserNickname(session, targetUserId) || targetUserId
+          return `${nickname} 拒绝了和你ccb`
+        }
       }
       // ------------------------
 
       if (targetUserId === actorId && !config.selfCcb) {
-        return '怎么还能捅到自己的啊（恼）'
+        return '怎么还能对自己下手啊（恼）'
       }
 
       const duration = parseFloat((Math.random() * 59 + 1).toFixed(2))
       let V = parseFloat((Math.random() * 99 + 1).toFixed(2))
-      
+
       const prob = currentConfig.critProb
       let crit = false
       if (Math.random() < prob) {
         V = parseFloat((V * 2).toFixed(2))
         crit = true
       }
-      
+
       const pic = getAvatar(targetUserId)
 
-      // 查询数据库中该群该用户的记录
-      const exists = await ctx.database.get('ccb_record', {
-        groupId: session.guildId,
-        userId: targetUserId
-      })
-
+      // updateCCBRecord 内部会自动判断记录是否存在，无需提前查询
       let message: string
       try {
         const nickname = await getUserNickname(session, targetUserId)
-        if (exists.length > 0) {
-          message = await updateCCBRecord(session, session.guildId, targetUserId, duration, V, nickname, crit, pic)
-        } else {
-          message = await createNewCCBRecord(session, session.guildId, targetUserId, duration, V, nickname, pic)
-        }
+        message = await updateCCBRecord(session, session.guildId, targetUserId, duration, V, nickname, crit, pic)
       } catch (e) {
         console.error(`报错: ${e}`)
         return '对方拒绝了和你ccb'
@@ -444,34 +626,44 @@ export function apply(ctx: Context, config: CCBConfig) {
       if (Math.random() < currentConfig.ywProbability) {
         banList[actorId] = now + currentConfig.ywBanDuration
         await session.send(message)
-        return '💥你炸膛了！再也不能ccb了（悲）'
+        return '💥你炸膛了！不能ccb了（悲）'
       }
 
       return message
     })
+
+  // 通用排行榜生成函数
+  async function buildRanking<T extends { userId: string }>(
+    session: Session,
+    title: string,
+    data: T[],
+    formatLine: (item: T, nick: string, index: number) => string
+  ): Promise<string> {
+    const nicknameMap = new Map<string, string>()
+    await Promise.all(data.map(async r => {
+      nicknameMap.set(r.userId, await getUserNickname(session, r.userId))
+    }))
+
+    let msg = `${title}\n`
+    for (let i = 0; i < data.length; i++) {
+      const nick = nicknameMap.get(data[i].userId) || data[i].userId
+      msg += formatLine(data[i], nick, i)
+    }
+    return msg.trim()
+  }
 
   ctx.command('ccbtop', '按次数排行')
     .action(async ({ session }) => {
       const checkResult = checkGroupCommand(session)
       if (checkResult) return checkResult
 
-      // 获取当前群所有数据
       const groupData = await ctx.database.get('ccb_record', { groupId: session.guildId })
       if (!groupData.length) return '当前群暂无ccb记录。'
 
-      // 排序
       const top5 = groupData.sort((a, b) => b.num - a.num).slice(0, 5)
-
-      const nicknamePromises = top5.map(r => getUserNickname(session, r.userId))
-      const nicknames = await Promise.all(nicknamePromises)
-
-      let msg = '被ccb排行榜 TOP5：\n'
-      for (let i = 0; i < top5.length; i++) {
-        const r = top5[i]
-        const nick = nicknames[i] || r.userId
-        msg += `${i + 1}. ${nick} - 次数：${r.num}\n`
-      }
-      return msg.trim()
+      return buildRanking(session, '被ccb排行榜 TOP5：', top5,
+        (r, nick, i) => `${i + 1}. ${nick} - 次数：${r.num}\n`
+      )
     })
 
   ctx.command('ccbvol', '按注入量排行')
@@ -483,16 +675,9 @@ export function apply(ctx: Context, config: CCBConfig) {
       if (!groupData.length) return '当前群暂无ccb记录。'
 
       const top5 = groupData.sort((a, b) => b.vol - a.vol).slice(0, 5)
-      const nicknamePromises = top5.map(r => getUserNickname(session, r.userId))
-      const nicknames = await Promise.all(nicknamePromises)
-
-      let msg = '被注入量排行榜 TOP5：\n'
-      for (let i = 0; i < top5.length; i++) {
-        const r = top5[i]
-        const nick = nicknames[i] || r.userId
-        msg += `${i + 1}. ${nick} - 累计注入：${r.vol.toFixed(2)}ml\n`
-      }
-      return msg.trim()
+      return buildRanking(session, '被注入量排行榜 TOP5：', top5,
+        (r, nick, i) => `${i + 1}. ${nick} - 累计注入：${r.vol.toFixed(2)}ml\n`
+      )
     })
 
   ctx.command('ccbmax', '按max值排行并输出产生者')
@@ -515,14 +700,14 @@ export function apply(ctx: Context, config: CCBConfig) {
 
       const userIds: string[] = []
       const producerIds: (string | null)[] = []
-      
+
       for (const item of entries) {
         const r = item.record
         userIds.push(r.userId)
-        
+
         let producer_id = null
         const ccb_by = r.ccb_by || {}
-        
+
         // 优先找 max 标记
         for (const actor_id in ccb_by) {
           if (ccb_by[actor_id].max) {
@@ -530,7 +715,7 @@ export function apply(ctx: Context, config: CCBConfig) {
             break
           }
         }
-        
+
         // 没找到标记则找次数最多的
         if (!producer_id && Object.keys(ccb_by).length > 0) {
           let maxCount = -1
@@ -541,7 +726,7 @@ export function apply(ctx: Context, config: CCBConfig) {
             }
           }
         }
-        
+
         producerIds.push(producer_id)
         if (producer_id) userIds.push(producer_id)
       }
@@ -570,10 +755,10 @@ export function apply(ctx: Context, config: CCBConfig) {
       const checkResult = checkGroupCommand(session)
       if (checkResult) return checkResult
 
-      let targetUserId = session.userId
-      if (target) {
-        const match = target.match(/^[^:]+:(.+)$/)
-        if (match) targetUserId = match[1]
+      // 使用通用的目标用户查找逻辑，与 ccb 命令保持一致
+      let targetUserId = await validateTargetUser(session, target)
+      if (targetUserId.startsWith('无法找到')) {
+        return targetUserId
       }
 
       const [record] = await ctx.database.get('ccb_record', { groupId: session.guildId, userId: targetUserId })
@@ -581,7 +766,7 @@ export function apply(ctx: Context, config: CCBConfig) {
 
       const total_num = record.num
       const total_vol = record.vol
-      let max_val = record.max || (total_num > 0 ? total_vol / total_num : 0)
+      const max_val = record.max || (total_num > 0 ? total_vol / total_num : 0)
 
       // 计算主动 ccb 次数 (需要全表扫描该群数据)
       const groupData = await ctx.database.get('ccb_record', { groupId: session.guildId })
@@ -604,10 +789,10 @@ export function apply(ctx: Context, config: CCBConfig) {
         // Fallback: max count
         let maxCount = -1
         for (const actor_id in ccb_by) {
-            if (ccb_by[actor_id].count > maxCount) {
-                maxCount = ccb_by[actor_id].count
-                first_actor = actor_id
-            }
+          if (ccb_by[actor_id].count > maxCount) {
+            maxCount = ccb_by[actor_id].count
+            first_actor = actor_id
+          }
         }
       }
 
@@ -616,17 +801,17 @@ export function apply(ctx: Context, config: CCBConfig) {
 
       const msg = [
         `【${target_nick} 】`,
-        `• 破壁人：${first_nick}`,
-        `• 北朝：${total_num}`,
-        `• 朝壁：${cb_total}`,
-        `• 诗经：${total_vol.toFixed(2)}ml`,
-        `• 马克思：${max_val.toFixed(2)}ml`
+        `• 开拓者：${first_nick}`,
+        `• 被注入次数：${total_num}`,
+        `• 主动出击：${cb_total}`,
+        `• 累计容量：${total_vol.toFixed(2)}ml`,
+        `• 单次最高：${max_val.toFixed(2)}ml`
       ].join('\n')
 
       return msg
     })
 
-  ctx.command('xnn', 'XNN榜 - 计算群中最xnn特质的群友')
+  ctx.command('ccbcharm', '魅力榜 - 计算群中最受欢迎的群友')
     .action(async ({ session }) => {
       const checkResult = checkGroupCommand(session)
       if (checkResult) return checkResult
@@ -658,11 +843,11 @@ export function apply(ctx: Context, config: CCBConfig) {
         nicknameMap.set(r.userId, await getUserNickname(session, r.userId))
       }))
 
-      let msg = '💎 XNN TOP5 💎\n'
+      let msg = '💎 魅力榜 TOP5 💎\n'
       for (let i = 0; i < ranking.length; i++) {
         const { userId, val } = ranking[i]
         const nick = nicknameMap.get(userId) || userId
-        msg += `${i + 1}. ${nick} - XNN值：${val.toFixed(2)}\n`
+        msg += `${i + 1}. ${nick} - 魅力值：${val.toFixed(2)}\n`
       }
 
       return msg.trim()

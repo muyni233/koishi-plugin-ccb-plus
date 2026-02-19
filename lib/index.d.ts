@@ -17,6 +17,7 @@ export interface CCBConfig {
     whiteList: string[];
     selfCcb: boolean;
     critProb: number;
+    toggleCooldown: number;
     cheatList: CheatConfig[];
 }
 export interface CCBRecord {
@@ -36,6 +37,8 @@ export interface CCBRecord {
 export interface CCBUserSetting {
     userId: string;
     optOut: boolean;
+    lastToggleTime: number;
+    overrides: Record<string, boolean>;
 }
 declare module 'koishi' {
     interface Tables {
