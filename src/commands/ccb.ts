@@ -63,19 +63,28 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
 
                 // 共用冷却与设置检查逻辑（合并重构）
                 const [userSetting] = await ctx.database.get('ccb_setting', { userId: senderId })
-                const lastToggle = userSetting?.lastToggleTime || 0
+                const targetKey = targetUserStr || '__global__'
+                const lastToggleTimes = { ...(userSetting?.lastToggleTimes || {}) }
+
+                let lastToggle = lastToggleTimes[targetKey] || 0
+                if (targetKey === '__global__' && !lastToggle) {
+                    lastToggle = userSetting?.lastToggleTime || 0 // 向后兼容旧字段
+                }
+
                 const cooldownResult = checkCooldown(lastToggle)
                 if (cooldownResult) return cooldownResult
 
                 const nowMs = Date.now()
+                lastToggleTimes[targetKey] = nowMs
 
                 if (!targetUserStr) {
                     const newOptOut = !!isOff
                     await ctx.database.upsert('ccb_setting', [{
                         userId: senderId,
                         optOut: newOptOut,
-                        lastToggleTime: nowMs,
-                        overrides: userSetting?.overrides || {}
+                        lastToggleTime: nowMs, // 保持更新以供兼容
+                        lastToggleTimes: lastToggleTimes,
+                        overrides: { ...(userSetting?.overrides || {}) }
                     }])
 
                     return newOptOut
@@ -83,7 +92,7 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
                         : '已关闭全局保护模式，允许你被ccb。'
                 } else {
                     const targetId = targetUserStr
-                    const overrides = userSetting?.overrides || {}
+                    const overrides = { ...(userSetting?.overrides || {}) }
 
                     overrides[targetId] = !isOff // true 代表允许，false 代表禁止
 
@@ -91,7 +100,8 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
                         userId: senderId,
                         overrides: overrides,
                         optOut: userSetting?.optOut ?? false,
-                        lastToggleTime: nowMs
+                        lastToggleTime: userSetting?.lastToggleTime || 0, // 不改变全局旧字段
+                        lastToggleTimes: lastToggleTimes
                     }])
 
                     const targetNick = await state.getUserNickname(session, targetId).catch(() => targetId) || targetId

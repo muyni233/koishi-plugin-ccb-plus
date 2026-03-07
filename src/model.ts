@@ -26,6 +26,7 @@ export interface CCBUserSetting {
     optOut: boolean // true 表示拒绝被 ccb
     lastToggleTime: number
     overrides: Record<string, boolean>
+    lastToggleTimes?: Record<string, number> // 存储全局及各个指定用户的独立冷却时间
 }
 
 declare module 'koishi' {
@@ -51,8 +52,9 @@ export function applyDatabase(ctx: Context) {
     ctx.model.extend('ccb_setting', {
         userId: 'string',
         optOut: 'boolean',
-        lastToggleTime: 'unsigned',
+        lastToggleTime: 'double',
         overrides: 'json',
+        lastToggleTimes: 'json',
     }, {
         primary: 'userId',
     })

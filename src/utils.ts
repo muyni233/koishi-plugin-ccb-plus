@@ -120,9 +120,19 @@ export class CcbState {
                 return String(atEl.attrs.id)
             }
         } catch (e) {
-            // 解析失败时的兜底正则，支持跨越特殊字符
-            const atMatch = input.match(/<at\s+(?:.*?\s+)?id=(["'])(.*?)\1/i)
-            if (atMatch) return atMatch[2]
+            // 忽略异常，继续下面的正则匹配
+        }
+
+        // 兜底正则，支持跨越特殊字符（例如名字中带有 > 时 h.parse 可能会截断导致 attrs 里没有 id）
+        const atMatch = input.match(/<at\s+[^<]*?id=(["'])(.*?)\1/i)
+        if (atMatch) return atMatch[2]
+
+        // 预防 Koishi 的 Argv 词法分析被特殊空格（如 U+2007）截断，导致 input 连 id 属性都直接丢失
+        if (/<at\b/i.test(input)) {
+            const atEl = session.elements?.find(el => el.type === 'at')
+            if (atEl?.attrs?.id) {
+                return String(atEl.attrs.id)
+            }
         }
 
         // 2. 尝试带协议前缀的格式 (例如 onebot:123)

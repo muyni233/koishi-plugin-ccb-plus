@@ -18,6 +18,7 @@ export interface CCBUserSetting {
     optOut: boolean;
     lastToggleTime: number;
     overrides: Record<string, boolean>;
+    lastToggleTimes?: Record<string, number>;
 }
 declare module 'koishi' {
     interface Tables {
