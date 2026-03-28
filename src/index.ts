@@ -23,4 +23,36 @@ export function apply(ctx: Context, config: CCBConfig) {
 
   // 3. 注册命令
   applyCommands(ctx, config, state)
+
+  // 4. 监听配置变化，处理重置操作
+  ctx.on('ready', async () => {
+    if (config.resetAllUsers && config.resetAllUsers !== 'none') {
+      const mode = config.resetAllUsers
+
+      if (mode === 'clear') {
+        // 清空所有用户设置
+        const allSettings = await ctx.database.get('ccb_setting', {})
+        if (allSettings.length > 0) {
+          await ctx.database.remove('ccb_setting', {})
+          ctx.logger.info(`已清空 ${allSettings.length} 个用户的所有设置`)
+        }
+      } else {
+        // 重置为 on 或 off
+        const newOptOut = mode === 'off'
+        const allSettings = await ctx.database.get('ccb_setting', {})
+        const updates = allSettings.map(setting => ({
+          userId: setting.userId,
+          optOut: newOptOut,
+          overrides: setting.overrides,
+          lastToggleTime: setting.lastToggleTime,
+          lastToggleTimes: setting.lastToggleTimes
+        }))
+
+        if (updates.length > 0) {
+          await ctx.database.upsert('ccb_setting', updates)
+          ctx.logger.info(`已将 ${updates.length} 个用户的全局状态重置为${mode === 'off' ? '保护' : '开放'}模式`)
+        }
+      }
+    }
+  })
 }

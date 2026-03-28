@@ -5,8 +5,8 @@ import { updateCCBRecord } from '../core'
 
 export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState) {
     ctx.command('ccb [target:user]', '给群友注入生命因子')
-        .option('off', '--off [user:string] 将自己加入白名单（禁止被人ccb），可指定用户')
-        .option('on', '--on [user:string] 将自己移出白名单（允许被人ccb），可指定用户')
+        .option('off', '--off [user:string] 开启保护模式（禁止被ccb），可指定用户')
+        .option('on', '--on [user:string] 关闭保护模式（允许被ccb），默认所有用户处于保护状态')
         .action(async ({ session, options }, target: string) => {
             const checkResult = state.checkGroupCommand(session)
             if (checkResult) return checkResult
@@ -29,6 +29,7 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
             // --- 处理开关选项 ---
             const hasOff = 'off' in options
             const hasOn = 'on' in options
+
             if (hasOff || hasOn) {
                 const isOff = hasOff
                 const optionVal = isOff ? options.off : options.on
@@ -114,8 +115,13 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
 
             // --- 检查发起者是否在保护名单 ---
             const [senderSetting] = await ctx.database.get('ccb_setting', { userId: senderId })
-            if (senderSetting?.optOut) {
-                return '你已开启保护模式，无法ccb他人。请先使用 --on 解除保护。'
+            const senderOptOut = senderSetting?.optOut ?? config.defaultOptOut
+            const senderIsInitial = !senderSetting // 判断发起者是否为初始状态
+            if (senderOptOut) {
+                const message = senderIsInitial
+                    ? '你还未开启ccb功能。请先使用 ccb --on 来开启。'
+                    : '你已开启保护模式，无法ccb他人。请先使用 ccb --on 解除保护。'
+                return message
             }
             // ---------------------------
 
@@ -162,7 +168,7 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
             // 1. 检查 Config 白名单
             if (config.whiteList.includes(targetUserId)) {
                 const nickname = await state.getUserNickname(session, targetUserId) || targetUserId
-                return `${nickname} 拒绝了和你ccb。`
+                return `${nickname} 已开启保护模式，拒绝了和你ccb。`
             }
             // 2. 检查发起者是否主动禁止了目标（互相禁止逻辑）
             if (senderSetting?.overrides?.[targetUserId] === false) {
@@ -171,19 +177,23 @@ export function applyCcbCommand(ctx: Context, config: CCBConfig, state: CcbState
             }
             // 3. 检查 数据库 目标用户自定义设置
             const [targetSetting] = await ctx.database.get('ccb_setting', { userId: targetUserId })
-            if (targetSetting) {
-                const overrides = targetSetting.overrides || {}
-                // 优先检查特定覆盖
-                if (overrides[actorId] === false) {
-                    const nickname = await state.getUserNickname(session, targetUserId) || targetUserId
-                    return `${nickname} 拒绝了和你ccb`
-                }
+            const targetOptOut = targetSetting?.optOut ?? config.defaultOptOut
+            const overrides = targetSetting?.overrides || {}
+            const isInitialState = !targetSetting // 判断是否为初始状态
 
-                // 如果没有特定允许，再检查全局设置
-                if (overrides[actorId] !== true && targetSetting.optOut) {
-                    const nickname = await state.getUserNickname(session, targetUserId) || targetUserId
-                    return `${nickname} 拒绝了和你ccb`
-                }
+            // 优先检查特定覆盖
+            if (overrides[actorId] === false) {
+                const nickname = await state.getUserNickname(session, targetUserId) || targetUserId
+                return `${nickname} 已开启针对你的保护，拒绝了和你ccb。`
+            }
+
+            // 如果没有特定允许，再检查全局设置
+            if (overrides[actorId] !== true && targetOptOut) {
+                const nickname = await state.getUserNickname(session, targetUserId) || targetUserId
+                const message = isInitialState
+                    ? `${nickname} 还未开启ccb功能。请让ta使用 ccb --on 来开启。`
+                    : `${nickname} 已开启保护模式，拒绝了和你ccb。请让ta使用 ccb --on 来允许被ccb。`
+                return message
             }
             // ------------------------
 

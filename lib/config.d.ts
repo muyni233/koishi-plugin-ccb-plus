@@ -17,5 +17,7 @@ export interface CCBConfig {
     critProb: number;
     toggleCooldown: number;
     cheatList: CheatConfig[];
+    defaultOptOut: boolean;
+    resetAllUsers?: 'none' | 'on' | 'off' | 'clear';
 }
 export declare const Config: Schema<CCBConfig>;

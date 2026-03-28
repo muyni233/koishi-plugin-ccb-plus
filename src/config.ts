@@ -20,6 +20,8 @@ export interface CCBConfig {
     critProb: number
     toggleCooldown: number
     cheatList: CheatConfig[]
+    defaultOptOut: boolean
+    resetAllUsers?: 'none' | 'on' | 'off' | 'clear'
 }
 
 export const Config: Schema<CCBConfig> = Schema.object({
@@ -38,5 +40,12 @@ export const Config: Schema<CCBConfig> = Schema.object({
         ywProbability: Schema.number().default(0).min(0).max(1).description('特权冷却概率'),
         critProb: Schema.number().default(0.8).min(0).max(1).description('特权暴击概率'),
         ywBanDuration: Schema.number().default(60).description('特权冷却时长（秒）')
-    })).role('table').description('开挂名单（优先级高于全局设置）')
+    })).role('table').description('开挂名单（优先级高于全局设置）'),
+    defaultOptOut: Schema.boolean().default(true).description('新用户默认状态（true=保护模式，false=开放模式）'),
+    resetAllUsers: Schema.union([
+        Schema.const('none' as const).description('无操作'),
+        Schema.const('on' as const).description('重置为开放模式'),
+        Schema.const('off' as const).description('重置为保护模式'),
+        Schema.const('clear' as const).description('清空所有设置（恢复初始状态）')
+    ]).default('none').description('批量管理用户状态（操作完成后请改回"无操作"）').role('radio')
 })
