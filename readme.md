@@ -63,9 +63,9 @@ npm install koishi-plugin-ccb-plus
 |--------|------|--------|------|
 | `selfCcb` | boolean | false | 是否允许自己 ccb 自己 |
 | `critProb` | number | 0.1 | 暴击概率 (0-1) |
-| `ywWindow` | number | 60 | 阳痿检测时间窗口（秒）|
-| `ywThreshold` | number | 5 | 阳痿检测次数阈值 |
-| `ywBanDuration` | number | 300 | 阳痿惩罚时长（秒）|
+| `ywWindow` | number | 60 | 冷却检测时间窗口（秒）|
+| `ywThreshold` | number | 5 | 冷却检测次数阈值 |
+| `ywBanDuration` | number | 300 | 冷却时长（秒）|
 | `ywProbability` | number | 0.05 | 炸膛概率 (0-1) |
 | `toggleCooldown` | number | 10 | 开关冷却时间（秒）|
 | `whiteList` | string[] | [] | 永久保护名单（用户ID）|
