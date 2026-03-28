@@ -71,10 +71,6 @@ npm install koishi-plugin-ccb-plus
 | `whiteList` | string[] | [] | 永久保护名单（用户ID）|
 | `defaultOptOut` | boolean | true | 新用户默认状态（true=保护，false=开放）|
 
-## 许可证
-
-MIT
-
 ---
 
 > 使用 Claude Opus 4.6 协助开发
